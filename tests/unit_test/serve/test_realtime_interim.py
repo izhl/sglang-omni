@@ -114,7 +114,7 @@ async def test_interim_emitted_during_speech(
 
     item_id = await _drive_speech_started(session)
     await _wait_for(lambda: bool(_interim_events(websocket)))
-    await session._stop_interim_loop()
+    await session.stop_interim_loop()
 
     events = _interim_events(websocket)
     assert len(events) == 1
@@ -152,7 +152,7 @@ async def test_interim_deduplicated(
     # Enough new audio for a second qualifying refresh.
     await _append_pcm(session)
     await asyncio.sleep(0.1)
-    await session._stop_interim_loop()
+    await session.stop_interim_loop()
 
     events = _interim_events(websocket)
     assert len(events) == 1
@@ -176,7 +176,7 @@ async def test_interim_stopped_on_speech_end(
     await asyncio.sleep(0.01)
     in_flight_request_id = session._interim_request_id
 
-    await session._stop_interim_loop()
+    await session.stop_interim_loop()
 
     assert session._interim_task is None
     assert session._interim_request_id is None
@@ -209,7 +209,7 @@ async def test_interim_decode_failure_silent(
     await asyncio.sleep(0.05)
     await _append_pcm(session)
     await _wait_for(lambda: bool(_interim_events(websocket)))
-    await session._stop_interim_loop()
+    await session.stop_interim_loop()
 
     # The failed refresh never surfaces as an error event; the loop carried
     # on and delivered the next successful hypothesis.
@@ -228,7 +228,7 @@ async def test_interim_uses_verbatim_prompt(
 
     await _drive_speech_started(session)
     await _wait_for(lambda: bool(client.seen_requests))
-    await session._stop_interim_loop()
+    await session.stop_interim_loop()
 
     assert client.seen_requests, "interim decode must issue an engine request"
     request = client.seen_requests[0]
