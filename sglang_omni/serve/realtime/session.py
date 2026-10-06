@@ -52,8 +52,12 @@ _TRANSCRIPTION_PROMPT = (
 # Interim partial decode throttling: wait at least this long between decode
 # refreshes, and only decode when enough new audio accumulated since the
 # previous refresh (16 kHz PCM16 = 32000 bytes per second).
-_INTERIM_DECODE_INTERVAL_S = 2.0
-_INTERIM_MIN_NEW_BYTES = 32_000 // 5  # 0.2s of new audio
+# Interim partial decode throttling: refresh interval and minimum new audio
+# between refreshes. 0.2s mirrors the 80ms-per-frame decode cadence of
+# realtime pipelines with headroom; full prefill per refresh is a documented
+# draft cost (incremental prefill tracked in #1837 S6).
+INTERIM_DECODE_INTERVAL_S = 2.0
+INTERIM_MIN_NEW_BYTES = 32_000 // 5  # 0.2s of new audio at 16 kHz PCM16
 
 _MAX_CANCELLED_ASSISTANT_ITEM_IDS = 64
 
@@ -178,10 +182,10 @@ class RealtimeSession:
 
         # Interim transcription state (opt-in via session.update). The
         # interval is an instance attribute so tests can shrink it.
-        self._interim_task: asyncio.Task | None = None
-        self._interim_request_id: str | None = None
-        self._interim_last_text: str = ""
-        self.interim_interval_s: float = _INTERIM_DECODE_INTERVAL_S
+        self.interim_task: asyncio.Task | None = None
+        self.interim_request_id: str | None = None
+        self.interim_last_text: str = ""
+        self.interim_interval_s: float = INTERIM_DECODE_INTERVAL_S
 
     async def run(self) -> None:
         """Drive the WebSocket loop; ``websocket.disconnect`` arrives in-band."""
@@ -564,22 +568,22 @@ class RealtimeSession:
         # Cancel any previous loop without awaiting it: this runs in the
         # synchronous tail of handle_vad_emit. A stale loop exits by itself
         # on its next wake-up when it sees a different utterance_item_id.
-        task, self._interim_task = self._interim_task, None
+        task, self.interim_task = self.interim_task, None
         if task is not None and not task.done():
             task.cancel()
-        self._interim_request_id = None
-        self._interim_last_text = ""
+        self.interim_request_id = None
+        self.interim_last_text = ""
         if not self.session_object.interim_transcription:
             return
         if self.utterance_item_id is None or self.utterance_start_byte is None:
             return
-        self._interim_task = asyncio.create_task(self.interim_decode_loop())
+        self.interim_task = asyncio.create_task(self.interim_decode_loop())
 
     async def stop_interim_loop(self) -> None:
         """Cancel the interim loop and abort its in-flight engine request."""
-        task, self._interim_task = self._interim_task, None
-        request_id, self._interim_request_id = self._interim_request_id, None
-        self._interim_last_text = ""
+        task, self.interim_task = self.interim_task, None
+        request_id, self.interim_request_id = self.interim_request_id, None
+        self.interim_last_text = ""
         if task is not None and not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
@@ -612,11 +616,11 @@ class RealtimeSession:
                 # utterance ended / cleared / replaced while we slept
                 return
             end_byte = self.audio_buffer.num_bytes
-            if end_byte - start_byte < _INTERIM_MIN_NEW_BYTES:
+            if end_byte - start_byte < INTERIM_MIN_NEW_BYTES:
                 continue
             if (
                 last_decoded_end is not None
-                and end_byte - last_decoded_end < _INTERIM_MIN_NEW_BYTES
+                and end_byte - last_decoded_end < INTERIM_MIN_NEW_BYTES
             ):
                 continue  # too little new audio since the last refresh
             last_decoded_end = end_byte
@@ -637,9 +641,9 @@ class RealtimeSession:
                     }
                 )
                 continue
-            if not text or text == self._interim_last_text:
+            if not text or text == self.interim_last_text:
                 continue
-            self._interim_last_text = text
+            self.interim_last_text = text
             await self.send(
                 make_event(
                     INTERIM_TRANSCRIPTION_EVENT,
@@ -652,13 +656,13 @@ class RealtimeSession:
 
     async def decode_interim(self, audio_payload: str) -> str:
         """One verbatim decode refresh; same prompt as the final pass."""
-        self._interim_request_id = (
+        self.interim_request_id = (
             f"rt-interim-{self.session_id}-{uuid.uuid4().hex}"
         )
         text_acc: list[str] = []
         async for chunk in self.client.completion_stream(
             self.build_transcription_request(audio_payload),
-            request_id=self._interim_request_id,
+            request_id=self.interim_request_id,
         ):
             if chunk.modality == "text" and chunk.text:
                 text_acc.append(chunk.text)

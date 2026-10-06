@@ -19,8 +19,8 @@ from tests.unit_test.serve.test_realtime_barge_in import (
     FakeVAD,
     RecordingWebSocket,
     ScriptedClient,
-    _chunk,
-    _session,
+    make_chunk,
+    make_session,
 )
 
 StreamFactory = Callable[[], AsyncIterator[CompletionStreamChunk]]
@@ -32,8 +32,8 @@ _PCM_CHUNK = b"\x00\x01" * 4000  # 8000 bytes ≈ 0.25s
 
 def _interim_stream(text: str) -> StreamFactory:
     async def stream() -> AsyncIterator[CompletionStreamChunk]:
-        yield _chunk(text=text)
-        yield _chunk(finish_reason="stop")
+        yield make_chunk(text=text)
+        yield make_chunk(finish_reason="stop")
 
     return stream
 
@@ -108,7 +108,7 @@ async def _drive_speech_started(session: RealtimeSession) -> str:
 async def test_interim_emitted_during_speech(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session, websocket, _ = _session(monkeypatch, [_interim_stream("hello")])
+    session, websocket, _ = make_session(monkeypatch, [_interim_stream("hello")])
     session.session_object.interim_transcription = True
     session.interim_interval_s = 0.01
 
@@ -128,21 +128,21 @@ async def test_interim_emitted_during_speech(
 async def test_interim_disabled_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session, websocket, _ = _session(monkeypatch, [_interim_stream("hello")])
+    session, websocket, _ = make_session(monkeypatch, [_interim_stream("hello")])
     session.interim_interval_s = 0.01
 
     await _drive_speech_started(session)
     await asyncio.sleep(0.1)
 
     assert _interim_events(websocket) == []
-    assert session._interim_task is None
+    assert session.interim_task is None
 
 
 @pytest.mark.asyncio
 async def test_interim_deduplicated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session, websocket, _ = _session(
+    session, websocket, _ = make_session(
         monkeypatch, [_interim_stream("same"), _interim_stream("same")]
     )
     session.session_object.interim_transcription = True
@@ -163,7 +163,7 @@ async def test_interim_deduplicated(
 async def test_interim_stopped_on_speech_end(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session, websocket, client = _session(
+    session, websocket, client = make_session(
         monkeypatch, [_interim_stream("hello"), _interim_stream("hello")]
     )
     session.session_object.interim_transcription = True
@@ -174,12 +174,12 @@ async def test_interim_stopped_on_speech_end(
     # Second refresh is in flight potential; stop must cancel + abort.
     await _append_pcm(session)
     await asyncio.sleep(0.01)
-    in_flight_request_id = session._interim_request_id
+    in_flight_request_id = session.interim_request_id
 
     await session.stop_interim_loop()
 
-    assert session._interim_task is None
-    assert session._interim_request_id is None
+    assert session.interim_task is None
+    assert session.interim_request_id is None
     # Whatever request was live at stop time (first or second refresh) is
     # the one aborted; aborting an already-finished request is harmless.
     assert in_flight_request_id in client.aborted
@@ -196,7 +196,7 @@ async def test_interim_stopped_on_speech_end(
 async def test_interim_decode_failure_silent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session, websocket, _ = _session(
+    session, websocket, _ = make_session(
         monkeypatch, [_failing_stream(), _interim_stream("recovered")]
     )
     session.session_object.interim_transcription = True
